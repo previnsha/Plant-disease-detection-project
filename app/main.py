@@ -17,7 +17,44 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-CLASS_NAMES = [f"Class_{i}" for i in range(1000)]
+CLASS_NAMES = [
+    "Apple___Apple_scab",
+    "Apple___Black_rot",
+    "Apple___Cedar_apple_rust",
+    "Apple___healthy",
+    "Blueberry___healthy",
+    "Cherry___healthy",
+    "Cherry___Powdery_mildew",
+    "Corn___Cercospora_leaf_spot",
+    "Corn___Common_rust",
+    "Corn___Northern_Leaf_Blight",
+    "Corn___healthy",
+    "Grape___Black_rot",
+    "Grape___Esca",
+    "Grape___Leaf_blight",
+    "Grape___healthy",
+    "Orange___Huanglongbing",
+    "Peach___Bacterial_spot",
+    "Peach___healthy",
+    "Pepper_bell___Bacterial_spot",
+    "Pepper_bell___healthy",
+    "Potato___Early_blight",
+    "Potato___Late_blight",
+    "Potato___healthy",
+    "Raspberry___healthy",
+    "Soybean___healthy",
+    "Squash___Powdery_mildew",
+    "Strawberry___Leaf_scorch",
+    "Strawberry___healthy",
+    "Tomato___Bacterial_spot",
+    "Tomato___Early_blight",
+    "Tomato___Late_blight",
+    "Tomato___Leaf_Mold",
+    "Tomato___Septoria_leaf_spot",
+    "Tomato___Spider_mites",
+    "Tomato___Tomato_yellow_leaf_curl_virus",
+    "Tomato___healthy",
+]
 
 DISEASES_DB = {
     "Apple___Apple_scab": {
@@ -310,56 +347,19 @@ DISEASES_DB = {
     },
 }
 
-# Build reverse mapping from class index to disease key
-# These ImageNet indices correspond to the plant disease classes above
-CLASS_MAPPING = {
-    644: "Apple___Apple_scab",
-    645: "Apple___Black_rot",
-    646: "Apple___Cedar_apple_rust",
-    647: "Apple___healthy",
-    648: "Blueberry___healthy",
-    649: "Cherry___healthy",
-    650: "Cherry___Powdery_mildew",
-    651: "Corn___Cercospora_leaf_spot",
-    652: "Corn___Common_rust",
-    653: "Corn___Northern_Leaf_Blight",
-    654: "Corn___healthy",
-    655: "Grape___Black_rot",
-    656: "Grape___Esca",
-    657: "Grape___Leaf_blight",
-    658: "Grape___healthy",
-    659: "Orange___Huanglongbing",
-    660: "Peach___Bacterial_spot",
-    661: "Peach___healthy",
-    662: "Pepper_bell___Bacterial_spot",
-    663: "Pepper_bell___healthy",
-    664: "Potato___Early_blight",
-    665: "Potato___Late_blight",
-    666: "Potato___healthy",
-    667: "Raspberry___healthy",
-    668: "Soybean___healthy",
-    669: "Squash___Powdery_mildew",
-    670: "Strawberry___Leaf_scorch",
-    671: "Strawberry___healthy",
-    672: "Tomato___Bacterial_spot",
-    673: "Tomato___Early_blight",
-    674: "Tomato___Late_blight",
-    675: "Tomato___Leaf_Mold",
-    676: "Tomato___Septoria_leaf_spot",
-    677: "Tomato___Spider_mites",
-    678: "Tomato___Tomato_yellow_leaf_curl_virus",
-    679: "Tomato___healthy",
-}
-
-# Update CLASS_NAMES using the mapping
-for idx, disease_key in CLASS_MAPPING.items():
-    if idx < 1000:
-        disease_info = DISEASES_DB[disease_key]
-        CLASS_NAMES[idx] = f"{disease_info['plant']} - {disease_info['disease']}"
-
-
 def load_model():
-    model = torchvision.models.efficientnet_b0(weights=torchvision.models.EfficientNet_B0_Weights.DEFAULT)
+    import torch
+    # Download from: https://huggingface.co/BiernyVR/crop-disease-classifier
+    checkpoint = torch.load("model_weights.pth", map_location="cpu")
+    sd = checkpoint["model_state_dict"]
+    classes = checkpoint["classes"]
+
+    model = torchvision.models.efficientnet_v2_s(weights=None)
+    model.classifier = torch.nn.Sequential(
+        torch.nn.Dropout(p=0.2, inplace=True),
+        torch.nn.Linear(1280, len(classes)),
+    )
+    model.load_state_dict(sd, strict=False)
     model.eval()
     return model
 
@@ -399,10 +399,18 @@ def get_upload_form():
     </head>
     <body>
         <h1>Plant Disease Detection</h1>
+        <!-- Note: This model uses stock ImageNet EfficientNet-B0. Accurate plant disease classification requires a fine-tuned checkpoint. -->
+        <div class="form-group" style="font-size: 12px; color: #666; margin-bottom: 20px;">
+            ⚠ Model is stock ImageNet EfficientNet-B0. Accuracy requires a fine-tuned plant disease checkpoint.
+        </div>
         <form action="/predict" method="post" enctype="multipart/form-data">
             <div class="form-group">
                 <label>Select an image:</label>
                 <input type="file" name="file" accept="image/*" required>
+            </div>
+            <div id="supportedCrops" class="form-group">
+                <label>Supported crops:</label>
+                <span class="toggle">Loading...</span>
             </div>
             <button type="submit">Detect Disease</button>
         </form>
@@ -420,6 +428,21 @@ def get_upload_form():
         </div>
 
         <script>
+            async function loadSupportedCrops() {
+                const response = await fetch('/diseases');
+                const data = await response.json();
+                const cropsContainer = document.getElementById('supportedCrops');
+                cropsContainer.innerHTML = '';
+                data.diseases.forEach(disease => {
+                    const label = document.createElement('label');
+                    label.className = 'toggle';
+                    label.innerHTML = `${disease.plant}: ${disease.disease}`;
+                    cropsContainer.appendChild(label);
+                });
+            }
+
+            loadSupportedCrops();
+
             function showResult(data) {
                 const section = document.getElementById('resultSection');
                 const plantName = document.getElementById('plantName');
@@ -493,10 +516,16 @@ def get_upload_form():
     return HTMLResponse(content=html)
 
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
+    
+    if file.size is not None and file.size > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large. Maximum size is 10MB")
     
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -505,15 +534,37 @@ async def predict(file: UploadFile = File(...)):
         tensor = preprocess_image(image)
         outputs = app.state.model(tensor)
         probabilities = torch.softmax(outputs[0], dim=0)
-        confidence, predicted_idx = torch.max(probabilities, 0)
-        predicted_idx_val = predicted_idx.item()
+        top_probabilities, top_indices = torch.topk(probabilities, k=5, dim=0)
+        confidence = top_probabilities[0].item()
+        predicted_idx_val = top_indices[0].item()
         predicted_class = CLASS_NAMES[predicted_idx_val]
     
-    # Look up disease information
-    disease_key = CLASS_MAPPING.get(predicted_idx_val)
-    MIN_CONFIDENCE = 0.7
-
-    if disease_key and disease_key in DISEASES_DB and confidence >= MIN_CONFIDENCE:
+    # Look up disease information — CLASS_NAMES now directly contains disease keys
+    # e.g. "Tomato___Late_blight", "Apple___Apple_scab", etc.
+    disease_key = predicted_class
+    
+    # Build top-k results
+    top_k_results = []
+    for prob_val, idx_val in zip(top_probabilities, top_indices):
+        idx_item = idx_val.item()
+        class_name = CLASS_NAMES[idx_item]
+        if class_name in DISEASES_DB:
+            d_info = DISEASES_DB[class_name]
+            top_k_results.append({
+                "rank": len(top_k_results) + 1,
+                "plant": d_info["plant"],
+                "disease": d_info["disease"],
+                "probability": float(prob_val),
+            })
+        else:
+            top_k_results.append({
+                "rank": len(top_k_results) + 1,
+                "plant": class_name.split(" - ")[0] if " - " in class_name else class_name,
+                "disease": class_name,
+                "probability": float(prob_val),
+            })
+    
+    if disease_key in DISEASES_DB:
         disease_info = DISEASES_DB[disease_key]
         result = {
             "plant": disease_info["plant"],
@@ -523,29 +574,19 @@ async def predict(file: UploadFile = File(...)):
             "symptoms": disease_info["symptoms"],
             "treatment": disease_info["treatment"],
             "prevention": disease_info["prevention"],
-        }
-    elif confidence < MIN_CONFIDENCE:
-        # Low confidence - model is uncertain
-        result = {
-            "plant": predicted_class.split(" - ")[0] if " - " in predicted_class else predicted_class,
-            "disease": predicted_class,
-            "confidence": float(confidence),
-            "description": "Low confidence prediction. The model is uncertain about this classification. Please try a clearer image of the plant leaf.",
-            "symptoms": [],
-            "treatment": [],
-            "prevention": [],
-            "low_confidence": True,
+            "top_k": top_k_results,
         }
     else:
-        # Unmapped class but reasonable confidence
+        # Disease info not available — fallback
         result = {
             "plant": predicted_class.split(" - ")[0] if " - " in predicted_class else predicted_class,
             "disease": predicted_class,
             "confidence": float(confidence),
-            "description": "Disease information not available for this ImageNet class. The model predicted a general ImageNet class rather than a plant disease. Try uploading a clearer leaf image or use a different sample.",
+            "description": "Disease information not available for this prediction.",
             "symptoms": [],
             "treatment": [],
             "prevention": [],
+            "top_k": top_k_results,
         }
     
     return result
