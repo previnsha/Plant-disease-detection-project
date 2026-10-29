@@ -1,0 +1,5 @@
+{
+  "framework": "fastapi",
+  "function": "app.main:app",
+  "runtime": "python3.12"
+}
